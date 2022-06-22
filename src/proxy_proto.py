@@ -129,8 +129,8 @@ class ProxyProtocol(asyncio.Protocol):
         self._cancel_dest_connect_timer()
         try:
             transport = task.result()
-            if not self._transport:
-                return
+            # if not self._transport:
+            #   return
             if transport:
                 self._downstream_protocol.connection_made(transport)
                 logger.debug(f"Dest is connected through {self._proxy_url}")

