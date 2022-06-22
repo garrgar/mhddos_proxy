@@ -75,19 +75,21 @@ class FloodSpec:
 
 class H2FloodIO(asyncio.Protocol):
 
-    def __init__(self, loop, headers: List[Tuple[str, str]], on_close):
+    def __init__(self, loop, headers: List[Tuple[str, str]], on_close, rcv: bool = False):
         self._loop = loop
         # XXX: ideally we have to read this from settings frame but it's gonna be harder
         self._num_streams = 128/2 - 1
         self._headers = headers
         self._target_host = host
         self._on_close = on_close
+        self._rcv = rcv
 
     def connection_made(self, transport) -> None:
         self._conn = h2.connection.H2Connection()
         self._transport = transport
         # XXX: do we have to read? this is required at least for settings sync
-        self._transport.pause_reading()
+        if not self._rcv:
+            self._transport.pause_reading()
         self._conn.initiate_connection()
         # XXX: full request might be (should be) provided from the method definition
         for ind in range(self._num_streams):
