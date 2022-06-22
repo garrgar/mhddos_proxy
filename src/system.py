@@ -1,22 +1,33 @@
 import asyncio
 import json
+import os
 import os.path
 import random
+import re
 import selectors
 import socket
 import sys
+import time
 from asyncio import events
 from contextlib import suppress
+from functools import lru_cache
 from itertools import cycle
-from typing import List, Optional, Union
+from typing import List, Optional, Tuple, Union
 
+import psutil
 import requests
 
 from src.core import cl, CONFIG_URL, logger
 from src.i18n import translate as t
 
 
-WINDOWS = sys.platform == "win32"
+IS_WINDOWS = sys.platform in {"win32", "cygwin"}
+IS_LINUX = sys.platform.startswith("linux")
+IS_MACOS = sys.platform.startswith("darwin") or sys.platform.startswith("freebsd")
+
+LINUX_DEFAULT_PORT_RANGE = (32_768, 61_000)
+IANA_DEFAULT_PORT_RANGE = (49_152, 65_535)
+
 WINDOWS_WAKEUP_SECONDS = 0.5
 
 
@@ -141,7 +152,7 @@ def setup_event_loop() -> asyncio.AbstractEventLoop:
 
     if uvloop:
         loop = events.new_event_loop()
-    elif WINDOWS:
+    elif IS_WINDOWS:
         _patch_proactor_connection_lost()
         loop = asyncio.ProactorEventLoop()
         # This is to allow CTRL-C to be detected in a timely fashion,
@@ -155,3 +166,84 @@ def setup_event_loop() -> asyncio.AbstractEventLoop:
     loop.set_exception_handler(_handle_uncaught_exception)
     asyncio.set_event_loop(loop)
     return loop
+
+
+def _detect_port_range() -> Optional[Tuple[int, int]]:
+    if IS_LINUX:
+        try:
+            with open("/proc/sys/net/ipv4/ip_local_port_range") as f:
+                low, high = f.read().split()
+            return int(low), int(high)
+        except Exception:
+            return LINUX_DEFAULT_PORT_RANGE
+
+    if IS_MACOS:
+        try:
+            ctl = "sysctl -n net.inet.ip.portrange.first net.inet.ip.portrange.last"
+            with os.popen(ctl) as f:
+                low, high = f.readlines()
+            return int(low), int(high)
+        except Exception:
+            return IANA_DEFAULT_PORT_RANGE
+
+    if IS_WINDOWS:
+        try:
+            ctl = "netsh int ipv4 show dynamicport tcp"
+            with os.popen(ctl) as f:
+                low, high = re.findall(r"\d+", f.read())
+            return int(low), int(high)
+        except Exception:
+            return IANA_DEFAULT_PORT_RANGE
+
+
+@lru_cache(maxsize=None)
+def detect_port_range_size() -> int:
+    try:
+        low, high = _detect_port_range()
+    except Exception:
+        low, high = IANA_DEFAULT_PORT_RANGE  # IANA default
+    return high - low + 1
+
+
+@lru_cache(maxsize=None)
+def detect_local_iface() -> Optional[str]:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        try:
+            sock.connect(("8.8.8.8", 80))
+        except:
+            return None
+        laddr, _ = sock.getsockname()
+        for iface_name, addrs in psutil.net_if_addrs().items():
+            for addr in addrs:
+                if addr.family == socket.AF_INET and addr.address == laddr:
+                    return iface_name
+    return None
+
+
+def fetch_netstats(iface: Optional[str]) -> Optional['psutil._common.snetio']:
+    if iface is None:
+        return psutil.net_io_counters()
+    else:
+        return psutil.net_io_counters(pernic=True).get(iface, None)
+
+
+class NetStats:
+
+    def __init__(self):
+        self._iface = detect_local_iface()
+        self._timer = time.perf_counter()
+        self._cursor = fetch_netstats(self._iface)
+
+    def tick(self) -> Optional[Tuple[float, float]]:
+        if self._cursor is None:
+            return None
+        now = time.perf_counter()
+        next_cursor = fetch_netstats(self._iface)
+        elapsed = now - self._timer
+        diff = (
+            (next_cursor.packets_sent - self._cursor.packets_sent) / elapsed,
+            (next_cursor.bytes_sent - self._cursor.bytes_sent) / elapsed,
+        )
+        self._timer = now
+        self._cursor = next_cursor
+        return diff

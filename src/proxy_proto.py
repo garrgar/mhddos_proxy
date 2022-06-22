@@ -8,24 +8,24 @@ from python_socks._proto import http as http_proto, socks4, socks5
 from python_socks.async_.asyncio import Proxy
 from python_socks.async_.asyncio._proxy import HttpProxy, Socks4Proxy, Socks5Proxy
 
-from .core import logger
+from .proxies import ProxySet
 
 
 class ProxyProtocol(asyncio.Protocol):
 
     def __init__(
         self,
-        proxy_url: str,  # XXX: is one is only used for the logging
+        proxy_url: str,
         proxy: Proxy,
+        proxies: ProxySet,
         loop: asyncio.AbstractEventLoop,
         on_close: asyncio.Future,
         dest: Tuple[str, int],
         ssl: Optional[SSLContext],
         downstream_factory: Callable[[], asyncio.Protocol],
         connect_timeout: int = 30,
-        on_connect=None
+        on_connect=None,
     ):
-        logger.debug(f"Factory called for {proxy_url}")
         self._loop = loop
         self._transport = None
         self._downstream_factory = downstream_factory
@@ -34,6 +34,7 @@ class ProxyProtocol(asyncio.Protocol):
         self._downstream_resume_writing = None
         self._proxy_url = proxy_url
         self._proxy = proxy
+        self._proxies = proxies
         self._dest = dest
         self._ssl = ssl
         self._on_close = on_close
@@ -44,7 +45,6 @@ class ProxyProtocol(asyncio.Protocol):
         self._on_connect = on_connect
 
     def connection_made(self, transport):
-        logger.debug(f"Connected to {self._proxy_url}")
         assert self._transport is None
         self._transport = transport
         assert self._dest_connect_timer is None
@@ -56,7 +56,6 @@ class ProxyProtocol(asyncio.Protocol):
         raise NotImplemented
 
     def connection_lost(self, exc):
-        logger.debug(f"Disconnected from {self._proxy_url} {exc}")
         self._transport = None
         if self._downstream_protocol is not None:
             self._downstream_protocol.connection_lost(exc)
@@ -78,15 +77,12 @@ class ProxyProtocol(asyncio.Protocol):
             self._downstream_resume_writing()
 
     def data_received(self, data):
-        n_bytes = len(data)
-        logger.debug(f"Receieved data from {self._proxy_url} {n_bytes} bytes")
         if self._dest_connected:
             self._downstream_protocol.data_received(data)
         else:
             try:
                 self._negotiate_data_received(data)
             except Exception as exc:
-                logger.debug(f"Processing failed for {self._proxy_url} with {exc}")
                 if not self._on_close.done():
                     self._on_close.set_exception(exc)
                     self._transport.abort()
@@ -105,6 +101,7 @@ class ProxyProtocol(asyncio.Protocol):
 
     def _dest_connection_made(self):
         assert not self._dest_connected
+        self._proxies.track_alive(self._proxy_url)
         self._dest_connected = True
         self._downstream_protocol = self._downstream_factory()
         if hasattr(self._downstream_protocol, "pause_writing"):
@@ -113,7 +110,6 @@ class ProxyProtocol(asyncio.Protocol):
             self._downstream_resume_writing = self._downstream_protocol.resume_writing
         if self._ssl is None:
             self._cancel_dest_connect_timer()
-            logger.debug(f"Dest is connected through {self._proxy_url}")
             self._downstream_protocol.connection_made(self._transport)
         else:
             _tls = self._loop.create_task(
@@ -133,7 +129,6 @@ class ProxyProtocol(asyncio.Protocol):
             #   return
             if transport:
                 self._downstream_protocol.connection_made(transport)
-                logger.debug(f"Dest is connected through {self._proxy_url}")
             else:
                 self._transport.abort()
         except Exception as exc:
@@ -142,7 +137,6 @@ class ProxyProtocol(asyncio.Protocol):
                 self._transport.abort()
 
     def _abort_connection(self):
-        logger.debug(f"Response timeout for {self._proxy_url}")
         if not self._on_close.done():
             # XXX: most likely this should be timeout exception rather than None
             self._on_close.set_result(None)
@@ -162,7 +156,8 @@ class Socks4Protocol(ProxyProtocol):
         self._dest_connect()
 
     def _negotiate_data_received(self, data):
-        assert len(data) == 8, "SOCKS4: invalid response (wrong packet size)"
+        if len(data) != 8:
+            raise ProxyError("SOCKS4: invalid response (wrong packet size)")
         # we are not validating addr, port pair
         if data[0] != socks4.RSV:
             raise ProxyError("SOCKS4: proxy server sent invalid data")
@@ -198,7 +193,8 @@ class Socks5Protocol(ProxyProtocol):
             self._dest_connection_made()
         elif self._auth_method_req and self._auth_method is None:
             # expecting auth method response
-            assert n_bytes == 2, "SOCKS5: invalid auth method response (wrong packet size)"
+            if n_bytes != 2:
+                raise ProxyError("SOCKS5: invalid auth method response (wrong packet size)")
             res = socks5.AuthMethodsResponse(data)
             res.validate(request=self._auth_method_req)
             self._auth_method = res.auth_method
@@ -209,18 +205,16 @@ class Socks5Protocol(ProxyProtocol):
                 )
                 self._transport.write(bytes(req))
                 self._auth_req_sent = True
-                logger.debug(f"Sent user/pass for {self._proxy_url}")
             else:
                 self._auth_done = True
-                logger.debug(f"Auth is ready for {self._proxy_url}")
                 self._dest_connect()
         elif self._auth_method_req and self._auth_method is not None:
             # expecting auth response
-            assert n_bytes == 2, "SOCKS5: invalid auth response (wrong packet size)"
+            if n_bytes != 2:
+                raise ProxyError("SOCKS5: invalid auth response (wrong packet size)")
             res = socks5.AuthResponse(data)
             res.validate()
             self._auth_done = True
-            logger.debug(f"Auth is ready for {self._proxy_url}")
             self._dest_connect()
         else:
             raise ProxyError("SOCKS5: invalid state")
@@ -264,7 +258,6 @@ class Socks5Protocol(ProxyProtocol):
             password=self._proxy._password,
         )
         self._transport.write(bytes(self._auth_method_req))
-        logger.debug(f"Sent auth methods req to {self._proxy_url}")
 
     def _dest_connect(self):
         assert not self._dest_connected
@@ -272,7 +265,6 @@ class Socks5Protocol(ProxyProtocol):
         req = socks5.ConnectRequest(host=addr, port=port, rdns=False)
         req.set_resolved_host(addr)
         self._transport.write(bytes(req))
-        logger.debug(f"Sent connection req to {self._proxy_url}")
 
 
 class HttpTunelProtocol(ProxyProtocol):

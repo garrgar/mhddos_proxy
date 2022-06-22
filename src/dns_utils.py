@@ -1,5 +1,4 @@
 import asyncio
-import time
 from asyncio import gather
 from typing import Dict, List, Optional
 
@@ -21,12 +20,11 @@ except NoResolverConfiguration:
 ns = ['1.1.1.1', '1.0.0.1', '8.8.8.8', '8.8.4.4', '208.67.222.222', '208.67.220.220']
 resolver.nameservers = ns + list(resolver.nameservers)
 
-CACHE_FOR = 30 * 60
 RESOLVER_MAX_CONCURRENT = 100
 
 
 @lru_cache(maxsize=1024)
-async def _resolve_host(host: str, ttl_hash=None) -> str:
+async def _resolve_host(host: str) -> str:
     if dns.inet.is_address(host):
         return host
     answer = await resolver.resolve(host)
@@ -36,7 +34,7 @@ async def _resolve_host(host: str, ttl_hash=None) -> str:
 async def _safe_resolve_host(host: str, semaphore: asyncio.Semaphore) -> Optional[str]:
     try:
         async with semaphore:
-            resolved = await _resolve_host(host, int(time.time() / CACHE_FOR))
+            resolved = await _resolve_host(host)
         if is_forbidden_ip(resolved):
             raise dns.exception.DNSException("resolved to unsupported address")
         return resolved

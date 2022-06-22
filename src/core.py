@@ -4,7 +4,7 @@ from asyncio.log import logger as asyncio_logger
 from contextlib import suppress
 from multiprocessing import cpu_count
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Set, Tuple
 
 from colorama import Fore
 
@@ -47,8 +47,8 @@ CONFIG_URL = "https://raw.githubusercontent.com/porthole-ascend-cinnamon/mhddos_
 
 CPU_COUNT = cpu_count()
 DEFAULT_THREADS = 8000 if CPU_COUNT > 1 else 4000
+LIMITS_PADDING = 50
 
-CPU_PER_COPY = 2
 COPIES_AUTO = "auto"
 MAX_COPIES_AUTO = 4
 
@@ -58,6 +58,8 @@ SCHEDULER_MIN_INIT_FRACTION = 0.1
 SCHEDULER_MAX_INIT_FRACTION = 0.5
 SCHEDULER_FORK_SCALE = 3
 CONN_PROBE_PERIOD = 5
+PROXY_ALIVE_PRIO_THRESHOLD = 0.25
+PROXY_ALIVE_PRIO_RATE = 0.5
 
 UDP_FAILURE_BUDGET_FACTOR = 3
 UDP_FAILURE_DELAY_SECONDS = 1
@@ -73,3 +75,23 @@ class cl:
     YELLOW = Fore.LIGHTYELLOW_EX
     RED = Fore.LIGHTRED_EX
     RESET = Fore.RESET
+
+
+class Methods:
+    HTTP_METHODS: Set[str] = {
+        "CFB", "BYPASS", "GET", "RGET", "HEAD", "RHEAD", "POST", "STRESS", "DYN", "SLOW",
+        "NULL", "COOKIE", "PPS", "EVEN", "AVB",
+        "APACHE", "XMLRPC", "DOWNLOADER", "RHEX", "STOMP",
+        # this is not HTTP method (rather TCP) but this way it works with --http-methods
+        # settings being applied to the entire set of targets
+        "TREX"
+    }
+    TCP_METHODS: Set[str] = {"TCP", }
+    UDP_METHODS: Set[str] = {
+        "UDP", "VSE", "FIVEM", "TS3", "MCPE",
+        # the following methods are temporarily disabled for further investigation and testing
+        # "SYN", "CPS",
+        # Amplification
+        # "ARD", "CHAR", "RDP", "CLDAP", "MEM", "DNS", "NTP"
+    }
+    ALL_METHODS: Set[str] = {*HTTP_METHODS, *UDP_METHODS, *TCP_METHODS}

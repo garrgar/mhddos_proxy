@@ -8,10 +8,9 @@
 - Effective utilization of your resources due to the asynchronous architecture
 
 ### ⏱ Recent updates
+- **22.06.2022** Performance improvements. The `--debug` option is deprecated to avoid negative impact on performance
 - **10.06.2022** Introduced `--proxy` option for providing custom proxies directly from command args
 - **08.06.2022** Added `--copies auto` option to set the value automatically based on the resources available
-- **25.05.2022** Improved default output - the `--debug` option is no longer required 
-- **24.05.2022** Added auto-update option - see [Running](#2--running)
 
 ### 1. 💽 Installation
 
@@ -67,7 +66,6 @@ The script itself and installation instructions are here: https://github.com/por
     usage: runner.py target [target ...]
                      [-t THREADS] 
                      [-c URL]
-                     [--debug]
                      [--vpn]
                      [--http-methods METHOD [METHOD ...]]
                      [--itarmy]
@@ -84,7 +82,6 @@ The script itself and installation instructions are here: https://github.com/por
       --proxies URL|path     URL or local path(ex. proxies.txt) to file with proxies to use
       --proxy [PROXY ...]    List of proxies to use, separated by spaces
       --http-methods GET     List of HTTP(L7) methods to use (default is GET).
-      --debug                Detailed log for each target
       --itarmy               Attack targets from https://t.me/itarmyofukraine2022  
       --copies 1             Number of copies to run (default is 1). Use "auto" to set the value automatically
       --lang {en,ua}         Select language (default is ua)

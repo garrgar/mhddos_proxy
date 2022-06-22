@@ -11,10 +11,9 @@
   
 Оновлення версії для Windows | Mac | Linux | Android | Docker: https://telegra.ph/Onovlennya-mhddos-proxy-04-16  
 
+- **22.06.2022** Покращено продуктивність роботи. Параметр `--debug` більше не підтримується через негативний вплив на продуктивність
 - **10.06.2022** Додано зручний спосіб вказати власний проксі напряму в команді запуску (параметр `--proxy`)
 - **08.06.2022** Додано налаштування `--copies auto` для автоматичного вибору значення з врахуванням доступних ресурсів
-- **25.05.2022** Покращено вивід за замовчуванням - більше нема потреби в параметрі `--debug`
-- **24.05.2022** Додано можливість запуску з автоматичним оновленням - див. пункт [Запуск](#2--запуск)
 
 ### 1. 💽 Встановлення
 
@@ -77,7 +76,6 @@ TERMUX=1 bash runner.sh python https://example.com tcp://198.18.0.123:5678 -t 10
     usage: runner.py target [target ...]
                      [-t THREADS] 
                      [-c URL]
-                     [--debug]
                      [--vpn]
                      [--http-methods METHOD [METHOD ...]]
                      [--itarmy]
@@ -95,7 +93,6 @@ TERMUX=1 bash runner.sh python https://example.com tcp://198.18.0.123:5678 -t 10
       --proxy [PROXY ...]    List of proxies to use, separated by spaces
       --http-methods GET     List of HTTP(L7) methods to use (default is GET).
       --itarmy               Attack targets from https://t.me/itarmyofukraine2022  
-      --debug                Detailed log for each target
       --copies 1             Number of copies to run (default is 1). Use "auto" to set the value automatically
       --lang {en,ua}         Select language (default is ua)
 

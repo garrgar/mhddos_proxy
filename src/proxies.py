@@ -5,7 +5,7 @@ from typing import List, Optional, Tuple
 from aiohttp_socks import ProxyConnector
 from yarl import URL
 
-from .core import USE_ONLY_MY_IP
+from .core import PROXY_ALIVE_PRIO_RATE, PROXY_ALIVE_PRIO_THRESHOLD, USE_ONLY_MY_IP
 from .dns_utils import resolve_all
 from .system import fetch, read_or_fetch
 
@@ -48,6 +48,7 @@ class ProxySet:
         self._proxies_file = proxies_file
         self._skip_ratio = skip_ratio
         self._loaded_proxies = []
+        self._num_proxies = 0
         self._connections = defaultdict(int)
 
     @property
@@ -71,15 +72,22 @@ class ProxySet:
         ips = await resolve_all([url.host for url in urls])
         proxies = [str(url.with_host(ips.get(url.host, url.host))) for url in urls]
         self._loaded_proxies = proxies
+        self._num_proxies = len(self._loaded_proxies)
         self._connections = defaultdict(int)
-        return len(self._loaded_proxies)
+        return self._num_proxies
 
     def pick_random(self) -> Optional[str]:
         if not self.has_proxies:
             return None
         if self._skip_ratio > 0 and random.random() * 100 <= self._skip_ratio:
             return None
-        return random.choice(self._loaded_proxies)
+        # in case we have > 25% proxies marked as "alive", give 50% chance
+        # to prioritize "alive" pool rather than all proxies
+        prio = all((
+            len(self._connections) > self._num_proxies * PROXY_ALIVE_PRIO_THRESHOLD,
+            random.random() < PROXY_ALIVE_PRIO_RATE
+        ))
+        return random.choice(self._connections.keys() if prio else self._loaded_proxies)
 
     def pick_random_connector(self) -> Optional[ProxyConnector]:
         proxy_url = self.pick_random()
@@ -88,7 +96,7 @@ class ProxySet:
     def __len__(self) -> int:
         if not self.has_proxies:
             return 0
-        return len(self._loaded_proxies)
+        return self._num_proxies
 
     def track_alive(self, proxy_url: str) -> None:
         self._connections[proxy_url] += 1
@@ -116,6 +124,10 @@ class NoProxySet:
     @staticmethod
     def track_alive(self, proxy_url: str) -> None:
         pass
+
+    @property
+    def alive(self) -> List[Tuple[int, str]]:
+        return []
 
 
 async def load_provided_proxies(

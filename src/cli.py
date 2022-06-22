@@ -1,9 +1,7 @@
 import argparse
-import random
 
-from .core import COPIES_AUTO, DEFAULT_THREADS, SCHEDULER_FORK_SCALE, SCHEDULER_INITIAL_CAPACITY
+from .core import COPIES_AUTO, DEFAULT_THREADS, Methods, SCHEDULER_FORK_SCALE, SCHEDULER_INITIAL_CAPACITY
 from .i18n import LANGUAGES
-from .mhddos import Methods
 
 
 def init_argparse() -> argparse.ArgumentParser:
@@ -30,12 +28,6 @@ def init_argparse() -> argparse.ArgumentParser:
         type=lambda val: val if val == COPIES_AUTO else int(val),
         default=1,
         help='Number of copies (default is 1). Use "auto" to set the value automatically',
-    )
-    parser.add_argument(
-        '--debug',
-        action='store_true',
-        default=False,
-        help='Detailed log for each target',
     )
     parser.add_argument(
         '--vpn',
@@ -99,6 +91,7 @@ def init_argparse() -> argparse.ArgumentParser:
     )
 
     # Deprecated
-    parser.add_argument('--table', action='store_true', default=False)
+    parser.add_argument('--table', action='store_true', help='[DEPRECATED]')
+    parser.add_argument('--debug', action='store_true', help='[DEPRECATED]')
 
     return parser

