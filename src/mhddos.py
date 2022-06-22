@@ -73,29 +73,6 @@ except AttributeError:
 h2_ctx.verify_mode = CERT_NONE
 
 
-<<<<<<< HEAD
-class Methods:
-    HTTP_METHODS: Set[str] = {
-        "CFB", "BYPASS", "GET", "H2GET", "RGET", "HEAD", "RHEAD", "POST", "STRESS", "DYN", "SLOW",
-        "NULL", "COOKIE", "PPS", "EVEN", "AVB",
-        "APACHE", "XMLRPC", "DOWNLOADER", "RHEX", "STOMP",
-        # this is not HTTP method (rather TCP) but this way it works with --http-methods
-        # settings being applied to the entire set of targets
-        "TREX"
-    }
-    TCP_METHODS: Set[str] = {"TCP", }
-    UDP_METHODS: Set[str] = {
-        "UDP", "VSE", "FIVEM", "TS3", "MCPE",
-        # the following methods are temporarily disabled for further investigation and testing
-        # "SYN", "CPS",
-        # Amplification
-        # "ARD", "CHAR", "RDP", "CLDAP", "MEM", "DNS", "NTP"
-    }
-    ALL_METHODS: Set[str] = {*HTTP_METHODS, *UDP_METHODS, *TCP_METHODS}
-
-
-=======
->>>>>>> main
 class Tools:
     @staticmethod
     def humanbits(i: int) -> str:
