@@ -664,10 +664,10 @@ class AsyncTcpFlood(FloodBase):
             async with async_timeout.timeout(self._settings.connect_timeout_seconds):
                 transport, _ = await conn
             sock = transport.get_extra_info("socket")
-            # if sock and hasattr(sock, "setsockopt"):
-                # sock.setsockopt(SOL_SOCKET, SO_RCVBUF, self._settings.socket_rcvbuf)
+            if sock and hasattr(sock, "setsockopt"):
+                sock.setsockopt(SOL_SOCKET, SO_RCVBUF, self._settings.socket_rcvbuf)
                 # the normal termination sequence SHOULD NOT to be initiated
-                # sock.setsockopt(SOL_SOCKET, SO_LINGER, struct.pack("ii", 1, 0))
+                sock.setsockopt(SOL_SOCKET, SO_LINGER, struct.pack("ii", 1, 0))
         except asyncio.CancelledError as e:
             if on_connect:
                 on_connect.cancel()
